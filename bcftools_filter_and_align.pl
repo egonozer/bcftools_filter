@@ -1,5 +1,6 @@
 #!/usr/bin/perl
 
+my $version = "0.2";
 
 ## Will take multiple vcf files as input, filter SNPs based on criteria given,
 ## then output a fasta alignment of just variant positions. Will also output
@@ -11,6 +12,7 @@ use warnings;
 my $usage = "
 
 bcftools_filter_and_align.pl [options]
+version: $version
 
 Filters vcf files produced from alignments against a reference and generates
 an alignment
@@ -80,27 +82,14 @@ Options:
         etc.
   -o    output prefix
         [default: 'output']
-  -x    Filename of difference file to output. Will output a file with differences
-        from the reference sequence and what type of filter was applied.
-        Output file columns will be:
-        - reference position
-        - base change
-        - filters applied
-            bq = below minimum SNV quality score
-            bc = below minimum read consensus
-            bd = below minimum read depth (at snp site)
-            bn = below minimum read depth (at non-snp site)
-            ad = above maximum read depth
-            br = below minimum number of reads in each direction
-            nh = not homozygous
-            ma = masked
-            mi = missing
+  -t    threads
+        [default: 2]
 
 ";
 
 use Getopt::Std;
-use vars qw( $opt_v $opt_f $opt_q $opt_c $opt_d $opt_D $opt_r $opt_h $opt_m $opt_o $opt_x $opt_i );
-getopts('v:f:q:c:d:D:r:hm:o:x:i');
+use vars qw( $opt_v $opt_f $opt_q $opt_c $opt_d $opt_D $opt_r $opt_h $opt_m $opt_o $opt_x $opt_i $opt_t );
+getopts('v:f:q:c:d:D:r:hm:o:x:it:');
 
 die $usage unless $opt_v and $opt_f;
 
@@ -113,7 +102,7 @@ my $maxfold     = $opt_D ? $opt_D : 3;
 my $mindir      = defined $opt_r ? $opt_r : 1;
 my $maskfile    = $opt_m if $opt_m;
 my $outid       = $opt_o ? $opt_o: "output";
-my $difffile    = $opt_x if $opt_x;
+my $threads     = $opt_t ? $opt_t : 2;
 
 my %mask;
 if ($maskfile){
@@ -181,7 +170,7 @@ print STDERR "Total reference sequence length: $totseqleng\n";
 #Read and filter the vcf files
 my @order;
 my %snvs; #contig, position, base, depth
-my %missing_or_filtered;
+my $num_threads_running = 0;
 #stats:
   #below_min_qual(0)
   #below_min_consensus(1)
@@ -192,272 +181,279 @@ my %missing_or_filtered;
   #masked(6)
   #missing(7)
   #filtered(8)
-open (my $sout, ">$outid.stats.txt");
-print $sout "id\tmedian_depth\tmissing\t<min_depth\tsnvs\tfilt_snvs\t<min_qual\t<min_consensus\t>max_depth\tunidir\tnon-homozyg\tmasked\tsnvs_out\n";
 open (my $vin, "<$vcffile") or die "ERROR: Can't open $vcffile: $!\n";
 while (my $vline = <$vin>){
-    chomp $vline;
-    my ($path, $gen) = split("\t", $vline);
-    push @order, ([$gen, $path]);
-    my $in;
-    if ($path =~ m/\.gz$/){
-        open ($in, "gzip -cd $path | ");
-    } else {
-        open ($in, "<$path") or die "ERROR: Can't open $path: $!\n";
+    if ($num_threads_running < $threads){
+        chomp $vline;
+        my ($path, $gen) = split("\t", $vline);
+        my $pid = fork;
+        if (0 == $pid){
+            my $tpref = "$$";
+            open (my $tsout, ">$tpref.stats.txt") or die "ERROR: Can't open $tpref.stats.txt\n";
+            open (my $thout, ">$tpref.hash.txt") or die "ERROR: Can't open $tpref.hash.txt\n";
+            my $in;
+            if ($path =~ m/\.gz$/){
+                open ($in, "gzip -cd $path | ");
+            } else {
+                open ($in, "<$path") or die "ERROR: Can't open $path: $!\n";
+            }
+            my @stats = (0) x 9;
+            my @depths;
+            my $last_id = " ";
+            my $last_pos = 0;
+            my $totalsnps = 0;
+            my $progress = 0;
+            my $progress_pct = 0;
+            while (my $line = <$in>){
+                chomp $line;
+                next if $line =~ m/^\s*#/;
+                my @tmp = split("\t", $line);
+                my ($id, $pos, $ref, $alt, $qual, $stuff, $format, $format_val) = @tmp[0,1,3,4,5,7,8,9];
+                next if (length($ref) > 1 or length($alt) > 1); #Skip indels
+                if ($id ne $last_id){
+                    if ($last_pos != 0){
+                        my $last_leng = $seqlengs{$last_id};
+                        if ($last_pos < $last_leng){
+                            for my $i ($last_pos + 1 .. $last_leng){
+                                print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
+                                #@{$snvs{$last_id}{$i}{$gen}} = ("-", 0, 0, 0);
+                                $stats[7]++;
+                            }
+                        }
+                        for my $i (0 .. $#seqs){
+                            my ($ctg, $seq) = @{$seqs[$i]};
+                            if ($ctg eq $last_id){
+                                my $start = $i + 1;
+                                my $nextid = $seqs[$start][0];
+                                while ($nextid ne $id){
+                                    $start++;
+                                    $nextid = $seqs[$start][0];
+                                }
+                                last;
+                            }
+                        }
+                    }
+                    if ($pos > 1){
+                        for my $i (1 .. $pos - 1){
+                            print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
+                            #@{$snvs{$id}{$i}{$gen}} = ("-", 0, 0, 0);
+                            $stats[7]++;
+                        }
+                    }
+                }
+                if ($last_pos > 0 and $last_pos + 1 != $pos){
+                    for my $i ($last_pos + 1 .. $pos - 1){
+                        print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
+                        #@{$snvs{$id}{$i}{$gen}} = ("-", 0, 0, 0);
+                        $stats[7]++;
+                    }
+                }
+                my @formats = split(":", $format);
+                my @format_vals = split(":", $format_val);
+                my %fmt;
+                for my $i (0 .. $#formats){
+                    $fmt{$formats[$i]} = $format_vals[$i];
+                }
+                (my $fulldepth) = $stuff =~ m/DP=(\d+)/;
+                $stuff =~ m/DP4=(\d+),(\d+),(\d+),(\d+)/;
+                my ($rf, $rr, $af, $ar) = ($1, $2, $3, $4);
+                my $adep = $af+$ar;
+                my $total_depth;
+                if ($rf or $rr or $af or $ar){
+                    $total_depth = $rf + $rr + $af + $ar;
+                    print STDERR "WARNING: DP4 does not match DP\n$line\n" if !$fmt{"DP"} or $fmt{"DP"} != $total_depth;
+                } else {
+                    print STDERR "WARNING: No DP value in FORMAT section:\n$line\n" unless exists $fmt{"DP"};
+                    $total_depth = $fmt{"DP"};
+                }
+                push @depths, $total_depth unless $total_depth == 0;
+
+                ## Count all positions (snp or no snp) with depths below the minimum
+                my $filt = 0;
+                my @filt_types;
+                if ($total_depth < $mindep){
+                    print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
+                    #@{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $adep, $fulldepth);
+                    $stats[2]++;
+                    $filt++;
+                    push @filt_types, "bn";
+                }
+                if ($alt ne "."){
+
+                    if ($qual < $minqual){
+                        $filt++;
+                        $stats[0]++;
+                        push @filt_types, "bq";
+                    }
+                    my $cons = 100*(($af + $ar) / $total_depth);
+                    if ($cons < $mincons){
+                        $filt++;
+                        $stats[1]++;
+                        push @filt_types, "bc";
+                    }
+                    if ($total_depth < $mindep){
+                        $filt++;
+                        $stats[2]++;
+                        push @filt_types, "bd";
+                        $stats[7]++; #will also count these as missing / uncovered
+                    }
+                    if ($af < $mindir or $ar < $mindir){
+                        $filt++;
+                        $stats[4]++;
+                        push @filt_types, "br";
+                    }
+                    my $gtval;
+                    if ($fmt{"GT"}){
+                        $gtval = $fmt{"GT"};
+                    } else {
+                        print STDERR "WARNING: Variant position without GT value:\n$line\n";
+                    }
+                    if (($gtval ne "1/1" and $gtval ne "1") and !$opt_h){
+                        $filt++;
+                        $stats[5]++;
+                        push @filt_types, "nh";
+                    }
+                    if ($mask{$id}{$pos}){
+                        $filt++;
+                        $stats[6]++;
+                        push @filt_types, "ma";
+                    }
+                    if ($filt > 0){
+                        $stats[8]++;
+                        print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
+                        #@{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $adep, $fulldepth);
+                    } elsif ($filt == 0) {
+                        print $thout "$id\t$pos\t$gen\t$alt\t$total_depth\t$adep\t$fulldepth\n";
+                        #@{$snvs{$id}{$pos}{$gen}} = ($alt, $total_depth, $adep, $fulldepth);
+                        if ($alt =~ m/,/){
+                            my $first = (split",", $alt)[0];
+                            print $thout "$id\t$pos\t$gen\t$first\t$total_depth\t$adep\t$fulldepth\n";
+                            #@{$snvs{$id}{$pos}{$gen}} = ($first, $total_depth, $adep, $fulldepth);
+                        }
+                        $totalsnps++;
+                    }
+                } else {
+                    #Eliminate non-SNP positions with high-qual coverage less than the minimum depth
+
+                }
+                $last_id = $id;
+                $last_pos = $pos;
+            }
+            close ($in);
+            my $last_leng = $seqlengs{$last_id};
+            die "\nERROR: No file given\n" unless $last_leng;
+            if ($last_pos < $last_leng){
+                for my $i ($last_pos + 1 .. $last_leng){
+                    print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
+                    #@{$snvs{$last_id}{$i}{$gen}} = ("-", 0, 0, 0);
+                    $stats[7]++;
+                }
+            }
+
+            #calculate median depth
+            my $num_depths = scalar @depths;
+            print STDERR "num_depths = $num_depths\n";
+            @depths = sort{$a <=> $b} @depths;
+            my $mid = ($num_depths / 2) - 0.5;
+            my $median;
+            if ($mid == int($mid)){
+                $median = $depths[$mid];
+            } else {
+                my $two = $num_depths / 2;
+                my $one = $two - 1;
+                $median = ($depths[$one] + $depths[$two]) / 2;
+            }
+            print STDERR "Median depth: $median\n";
+            print STDERR "Maximum depth: $depths[$#depths]\n";
+            my $maxdep = $median * $maxfold;
+            print STDERR "Maximum depth threshold: $maxdep\n";
+            #Filter SNVs above maximum depth
+            foreach my $id (keys %snvs){
+                foreach my $pos (keys %{$snvs{$id}}){
+                    next unless $snvs{$id}{$pos}{$gen};
+                    my ($alt, $total_depth, $adep, $fulldepth) = @{$snvs{$id}{$pos}{$gen}};
+                    if ($total_depth > $maxdep){
+                        $stats[3]++;
+                        $stats[8]++;
+                        print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
+                        #@{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $adep, $fulldepth);
+                        $totalsnps--;
+                    }
+                }
+            }
+            my $totloci = $stats[8] + $totalsnps;
+            print $tsout "$gen\t$median\t$stats[7]\t$stats[2]\t$totloci\t$stats[8]\t$stats[0]\t$stats[1]\t$stats[3]\t$stats[4]\t$stats[5]\t$stats[6]\t$totalsnps\n";
+            close($thout);
+            close($tsout);
+            exit($?)
+        }
+        push @order, ([$gen, $path, $pid]);
+        $num_threads_running++;
     }
-    my @stats = (0) x 9;
-    my @depths;
-    my $last_id = " ";
-    my $last_pos = 0;
-    my $totalsnps = 0;
-    my $progress = 0;
-    my $progress_pct = 0;
-    print STDERR "Reading $gen: $progress_pct%";
+    if ($num_threads_running == $threads){
+        my $pid = wait;
+        my $status = $?;
+        die "ERROR: Process $pid returned a status of $status\n" if ($status != 0);
+        open (my $tin, "<$pid.hash.txt") or die "ERROR: Can't open $pid.hash.txt: $!\n";
+        while (my $tline = <$tin>){
+            chomp $tline;
+            my ($id, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
+            @{$snvs{$id}{$pos}{$gen}} = ($alt, $tdep, $adep, $fdep);
+        }
+        close ($tin);
+        #unlink ("$pid.hash.txt");
+        foreach my $i (0 .. $#order){
+            if ($pid == $order[$i][2]){
+                print STDERR "Finished processing $order[$i][0]\n";
+                last;
+            }
+        }
+        $num_threads_running--;
+    }
+}
+close ($vin);
+while (my $pid = wait){
+    last if $pid < 0;
+    my $status = $?;
+    die "ERROR: Process $pid returned a status of $status\n" if ($status != 0);
+    open (my $tin, "<$pid.hash.txt") or die "ERROR: Can't open $pid.hash.txt: $!\n";
+    while (my $tline = <$tin>){
+        chomp $tline;
+        my ($id, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
+        @{$snvs{$id}{$pos}{$gen}} = ($alt, $tdep, $adep, $fdep);
+    }
+    close ($tin);
+    #unlink ("$pid.hash.txt");
+    foreach my $i (0 .. $#order){
+        if ($pid == $order[$i][2]){
+            print STDERR "Finished processing $order[$i][0]\n";
+            last;
+        }
+    }
+    $num_threads_running--;
+}
+
+open (my $sout, ">$outid.stats.txt");
+print $sout "id\tmedian_depth\tmissing\t<min_depth\tsnvs\tfilt_snvs\t<min_qual\t<min_consensus\t>max_depth\tunidir\tnon-homozyg\tmasked\tsnvs_out\n";
+foreach my $slice (@order){
+    my ($gen, $path, $pid) = @{$slice};
+    open (my $in, "<$pid.stats.txt") or die "ERROR: Can't open $pid.stats.txt: $!\n";
     while (my $line = <$in>){
         chomp $line;
-        next if $line =~ m/^\s*#/;
-        my @tmp = split("\t", $line);
-        my ($id, $pos, $ref, $alt, $qual, $stuff, $format, $format_val) = @tmp[0,1,3,4,5,7,8,9];
-        next if (length($ref) > 1 or length($alt) > 1); #Skip indels
-        if ($id ne $last_id){
-            if ($last_pos != 0){
-                my $last_leng = $seqlengs{$last_id};
-                if ($last_pos < $last_leng){
-                    for my $i ($last_pos + 1 .. $last_leng){
-                        #push @{$missing_or_filtered{$last_id}{$i}{$gen}}, "mi";
-                        @{$snvs{$last_id}{$i}{$gen}} = ("-", 0, 0, 0, 0);
-                        $stats[7]++;
-                        #push @depths, 0;
-                        $progress += 100*(1/$totseqleng);
-                        if (int($progress) != $progress_pct){
-                            $progress_pct = int($progress);
-                            print STDERR "\rReading $gen: $progress_pct%";
-                        }
-                    }
-                }
-                for my $i (0 .. $#seqs){
-                    my ($ctg, $seq) = @{$seqs[$i]};
-                    if ($ctg eq $last_id){
-                        my $start = $i + 1;
-                        my $nextid = $seqs[$start][0];
-                        while ($nextid ne $id){
-                            $progress += 100*(length($seqs[$start][1])/$totseqleng);
-                            if (int($progress) != $progress_pct){
-                                $progress_pct = int($progress);
-                                print STDERR "\rReading $gen: $progress_pct%";
-                            }
-                            $start++;
-                            $nextid = $seqs[$start][0];
-                        }
-                        last;
-                    }
-                }
-            }
-            if ($pos > 1){
-                for my $i (1 .. $pos - 1){
-                    #push @{$missing_or_filtered{$id}{$i}{$gen}}, "mi";
-                    @{$snvs{$id}{$i}{$gen}} = ("-", 0, 0, 0, 0);
-                    $stats[7]++;
-                    #push @depths, 0;
-                    $progress += 100*(1/$totseqleng);
-                    if (int($progress) != $progress_pct){
-                        $progress_pct = int($progress);
-                        print STDERR "\rReading $gen: $progress_pct%";
-                    }
-                }
-            }
-        }
-        if ($last_pos > 0 and $last_pos + 1 != $pos){
-            for my $i ($last_pos + 1 .. $pos - 1){
-                #push @{$missing_or_filtered{$id}{$i}{$gen}}, "mi";
-                @{$snvs{$id}{$i}{$gen}} = ("-", 0, 0, 0, 0);
-                $stats[7]++;
-                #push @depths, 0;
-                $progress += 100*(1/$totseqleng);
-                if (int($progress) != $progress_pct){
-                    $progress_pct = int($progress);
-                    print STDERR "\rReading $gen: $progress_pct%";
-                }
-            }
-        }
-        $progress += 100*(1/$totseqleng);
-        if (int($progress) != $progress_pct){
-            $progress_pct = int($progress);
-            print STDERR "\rReading $gen: $progress_pct%";
-        }
-        my @formats = split(":", $format);
-        my @format_vals = split(":", $format_val);
-        my %fmt;
-        for my $i (0 .. $#formats){
-            $fmt{$formats[$i]} = $format_vals[$i];
-        }
-        (my $fulldepth) = $stuff =~ m/DP=(\d+)/;
-        $stuff =~ m/DP4=(\d+),(\d+),(\d+),(\d+)/;
-        my ($rf, $rr, $af, $ar) = ($1, $2, $3, $4);
-        my $rdep = $rf+$rr;
-        my $adep = $af+$ar;
-        my $total_depth;
-        if ($rf or $rr or $af or $ar){
-            $total_depth = $rf + $rr + $af + $ar;
-            print STDERR "WARNING: DP4 does not match DP\n$line\n" if !$fmt{"DP"} or $fmt{"DP"} != $total_depth;
-        } else {
-            print STDERR "WARNING: No DP value in FORMAT section:\n$line\n" unless exists $fmt{"DP"};
-            $total_depth = $fmt{"DP"};
-        }
-        push @depths, $total_depth unless $total_depth == 0;
-
-        ## Count all positions (snp or no snp) with depths below the minimum
-        my $filt = 0;
-        my @filt_types;
-        if ($total_depth < $mindep){
-            push @{$missing_or_filtered{$id}{$pos}{$gen}}, "bn";
-            @{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $rdep, $adep, $fulldepth);
-            $stats[2]++;
-            $filt++;
-            push @filt_types, "bn";
-        }
-
-        #push @depths, $total_depth;
-        if ($alt ne "."){
-
-            if ($qual < $minqual){
-                $filt++;
-                $stats[0]++;
-                push @filt_types, "bq";
-            }
-            my $cons = 100*(($af + $ar) / $total_depth);
-            if ($cons < $mincons){
-                $filt++;
-                $stats[1]++;
-                push @filt_types, "bc";
-            }
-            if ($total_depth < $mindep){
-                $filt++;
-                $stats[2]++;
-                push @filt_types, "bd";
-                $stats[7]++; #will also count these as missing / uncovered
-            }
-            if ($af < $mindir or $ar < $mindir){
-                $filt++;
-                $stats[4]++;
-                push @filt_types, "br";
-            }
-            my $gtval;
-            if ($fmt{"GT"}){
-                $gtval = $fmt{"GT"};
-            } else {
-                print STDERR "WARNING: Variant position without GT value:\n$line\n";
-            }
-            if (($gtval ne "1/1" and $gtval ne "1") and !$opt_h){
-                $filt++;
-                $stats[5]++;
-                push @filt_types, "nh";
-            }
-            if ($mask{$id}{$pos}){
-                $filt++;
-                $stats[6]++;
-                push @filt_types, "ma";
-            }
-            if ($filt > 0){
-                push @{$missing_or_filtered{$id}{$pos}{$gen}}, @filt_types;
-                $stats[8]++;
-                @{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $rdep, $adep, $fulldepth);
-            } elsif ($filt == 0) {
-                @{$snvs{$id}{$pos}{$gen}} = ($alt, $total_depth, $rdep, $adep, $fulldepth);
-                if ($alt =~ m/,/){
-                    my $first = (split",", $alt)[0];
-                    @{$snvs{$id}{$pos}{$gen}} = ($first, $total_depth, $rdep, $adep, $fulldepth);
-                }
-                $totalsnps++;
-            }
-        } else {
-            #Eliminate non-SNP positions with high-qual coverage less than the minimum depth
-
-        }
-        $last_id = $id;
-        $last_pos = $pos;
+        print $sout "$line\n";
     }
     close ($in);
-    my $last_leng = $seqlengs{$last_id};
-    die "\nERROR: No file given\n" unless $last_leng;
-    if ($last_pos < $last_leng){
-        for my $i ($last_pos + 1 .. $last_leng){
-            #push @{$missing_or_filtered{$last_id}{$i}{$gen}}, "mi";
-            @{$snvs{$last_id}{$i}{$gen}} = ("-", 0, 0, 0, 0);
-            $stats[7]++;
-            #push @depths, 0;
-            $progress += 100*(1/$totseqleng);
-            if (int($progress) != $progress_pct){
-                $progress_pct = int($progress);
-                print STDERR "\rReading $gen: $progress_pct%";
-            }
-        }
-    }
-    print STDERR "\rReading $gen: 100%\n";
-
-    #calculate median depth
-    my $num_depths = scalar @depths;
-    print STDERR "num_depths = $num_depths\n";
-    @depths = sort{$a <=> $b} @depths;
-    my $mid = ($num_depths / 2) - 0.5;
-    my $median;
-    if ($mid == int($mid)){
-        $median = $depths[$mid];
-    } else {
-        my $two = $num_depths / 2;
-        my $one = $two - 1;
-        $median = ($depths[$one] + $depths[$two]) / 2;
-    }
-    print STDERR "Median depth: $median\n";
-    print STDERR "Maximum depth: $depths[$#depths]\n";
-    my $maxdep = $median * $maxfold;
-    print STDERR "Maximum depth threshold: $maxdep\n";
-    #Filter SNVs above maximum depth
-    foreach my $id (keys %snvs){
-        #print STDERR "$id\n";
-        foreach my $pos (keys %{$snvs{$id}}){
-            #print STDERR "^$pos\n";
-            next unless $snvs{$id}{$pos}{$gen};
-            my ($alt, $total_depth, $rdep, $adep, $fulldepth) = @{$snvs{$id}{$pos}{$gen}};
-            #print STDERR "$id $pos $alt $depth\n";
-            if ($total_depth > $maxdep){
-                $stats[3]++;
-                $stats[8]++;
-                push @{$missing_or_filtered{$id}{$pos}{$gen}}, "ad";
-                @{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $rdep, $adep, $fulldepth);
-                $totalsnps--;
-            }
-        }
-    }
-    my $mi_and_bn = $stats[7] + $stats[2];
-    print STDERR "Total missing: $stats[7]\n";
-    print STDERR "Below minimum depth ($mindep): $stats[2]\n";
-    print STDERR "Total missing or below minimum depth ($mindep): $mi_and_bn\n";
-    my $pct_covered = 100 * (($totseqleng - $mi_and_bn) / $totseqleng);
-    print STDERR "\tPercent aligned: $pct_covered\n\n";
-
-    my $totloci = $stats[8] + $totalsnps;
-    print STDERR "Total SNV loci: $totloci\n";
-    print STDERR "Total filtered SNVs: $stats[8]\n";
-    #below_min_qual(0), below_min_consensus(1), below_min_depth(2), above_max_depth(3), unidirectional(4), non-homozygous(5), masked(6),
-    print STDERR "\tBelow minimum quality ($minqual): $stats[0]\n";
-    print STDERR "\tBelow minimum consensus ($mincons%): $stats[1]\n";
-    print STDERR "\tAbove maximum depth ($maxfold x $median): $stats[3]\n";
-    print STDERR "\tUnidirectional ($mindir): $stats[4]\n";
-    print STDERR "\tNon-homozygous: $stats[5]\n" if !$opt_h;
-    print STDERR "\tMasked: $stats[6]\n" if $maskfile;
-    print STDERR "Total unfiltered SNV loci: $totalsnps\n\n";
-
-    print $sout "$gen\t$median\t$stats[7]\t$stats[2]\t$totloci\t$stats[8]\t$stats[0]\t$stats[1]\t$stats[3]\t$stats[4]\t$stats[5]\t$stats[6]\t$totalsnps\n";
-
+    unlink("$pid.stats.txt");
 }
 close $sout;
 
+print STDERR "Processing variants\n";
 my @results;
 foreach (@seqs){
     my ($id, $seq) = @{$_};
     if ($snvs{$id}){
         my %hash = %{$snvs{$id}};
+        delete $snvs{$id}; ## free space
         foreach my $pos (sort{$a <=> $b} keys %hash){
             my $refbase = substr($seq, ($pos - 1), 1);
             my @bases;
@@ -469,7 +465,8 @@ foreach (@seqs){
             foreach my $slice (@order){
                 my ($gen, $path) = @{$slice};
                 if ($hash{$pos}{$gen}){
-                    my ($base, $total_depth, $rdep, $adep, $fulldepth) = @{$hash{$pos}{$gen}};
+                    my ($base, $total_depth, $adep, $fulldepth) = @{$hash{$pos}{$gen}};
+                    delete $hash{$pos}{$gen}; # free space
                     push @bases, ([$base, $total_depth, $adep, $fulldepth]);
                     $base = "-" if $base eq "F";
                     $bhash{$base}++;
