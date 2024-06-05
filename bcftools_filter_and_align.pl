@@ -168,6 +168,15 @@ print STDERR "Total reference sequences: ", scalar @seqs, "\n";
 print STDERR "Total reference sequence length: $totseqleng\n";
 
 #Read and filter the vcf files
+my $vtot = 0;
+open (my $vin, "<$vcffile") or die "ERROR: Can't open $vcffile: $!\n";
+while (my $vline = <$vin>) {
+    chomp $vline;
+    next if $vline =~ m/^\s*$/;
+    $vtot++;
+}
+close ($vin);
+
 my @order;
 my %snvs; #contig, position, base, depth
 my $num_threads_running = 0;
@@ -181,16 +190,20 @@ my $num_threads_running = 0;
   #masked(6)
   #missing(7)
   #filtered(8)
-open (my $vin, "<$vcffile") or die "ERROR: Can't open $vcffile: $!\n";
+print STDERR "Starting vcf file processing\n";
+my $vcount = 0;
+open ($vin, "<$vcffile") or die "ERROR: Can't open $vcffile: $!\n";
 while (my $vline = <$vin>){
     if ($num_threads_running < $threads){
         chomp $vline;
+        next if $vline =~ m/^\s*$/;
         my ($path, $gen) = split("\t", $vline);
         my $pid = fork;
         if (0 == $pid){
             my $tpref = "$$";
             open (my $tsout, ">$tpref.stats.txt") or die "ERROR: Can't open $tpref.stats.txt\n";
             open (my $thout, ">$tpref.hash.txt") or die "ERROR: Can't open $tpref.hash.txt\n";
+            my %tsnvs;
             my $in;
             if ($path =~ m/\.gz$/){
                 open ($in, "gzip -cd $path | ");
@@ -215,8 +228,8 @@ while (my $vline = <$vin>){
                         my $last_leng = $seqlengs{$last_id};
                         if ($last_pos < $last_leng){
                             for my $i ($last_pos + 1 .. $last_leng){
-                                print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
-                                #@{$snvs{$last_id}{$i}{$gen}} = ("-", 0, 0, 0);
+                                #print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
+                                @{$tsnvs{$last_id}{$i}} = ("-", 0, 0, 0);
                                 $stats[7]++;
                             }
                         }
@@ -235,16 +248,16 @@ while (my $vline = <$vin>){
                     }
                     if ($pos > 1){
                         for my $i (1 .. $pos - 1){
-                            print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
-                            #@{$snvs{$id}{$i}{$gen}} = ("-", 0, 0, 0);
+                            #print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
+                            @{$tsnvs{$id}{$i}} = ("-", 0, 0, 0);
                             $stats[7]++;
                         }
                     }
                 }
                 if ($last_pos > 0 and $last_pos + 1 != $pos){
                     for my $i ($last_pos + 1 .. $pos - 1){
-                        print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
-                        #@{$snvs{$id}{$i}{$gen}} = ("-", 0, 0, 0);
+                        #print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
+                        @{$tsnvs{$id}{$i}} = ("-", 0, 0, 0);
                         $stats[7]++;
                     }
                 }
@@ -272,8 +285,8 @@ while (my $vline = <$vin>){
                 my $filt = 0;
                 my @filt_types;
                 if ($total_depth < $mindep){
-                    print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
-                    #@{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $adep, $fulldepth);
+                    #print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
+                    @{$tsnvs{$id}{$pos}} = ("F", $total_depth, $adep, $fulldepth);
                     $stats[2]++;
                     $filt++;
                     push @filt_types, "bn";
@@ -320,15 +333,15 @@ while (my $vline = <$vin>){
                     }
                     if ($filt > 0){
                         $stats[8]++;
-                        print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
-                        #@{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $adep, $fulldepth);
+                        #print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
+                        @{$tsnvs{$id}{$pos}} = ("F", $total_depth, $adep, $fulldepth);
                     } elsif ($filt == 0) {
-                        print $thout "$id\t$pos\t$gen\t$alt\t$total_depth\t$adep\t$fulldepth\n";
-                        #@{$snvs{$id}{$pos}{$gen}} = ($alt, $total_depth, $adep, $fulldepth);
+                        #print $thout "$id\t$pos\t$gen\t$alt\t$total_depth\t$adep\t$fulldepth\n";
+                        @{$tsnvs{$id}{$pos}} = ($alt, $total_depth, $adep, $fulldepth);
                         if ($alt =~ m/,/){
                             my $first = (split",", $alt)[0];
-                            print $thout "$id\t$pos\t$gen\t$first\t$total_depth\t$adep\t$fulldepth\n";
-                            #@{$snvs{$id}{$pos}{$gen}} = ($first, $total_depth, $adep, $fulldepth);
+                            #print $thout "$id\t$pos\t$gen\t$first\t$total_depth\t$adep\t$fulldepth\n";
+                            @{$tsnvs{$id}{$pos}} = ($first, $total_depth, $adep, $fulldepth);
                         }
                         $totalsnps++;
                     }
@@ -344,15 +357,14 @@ while (my $vline = <$vin>){
             die "\nERROR: No file given\n" unless $last_leng;
             if ($last_pos < $last_leng){
                 for my $i ($last_pos + 1 .. $last_leng){
-                    print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
-                    #@{$snvs{$last_id}{$i}{$gen}} = ("-", 0, 0, 0);
+                    #print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
+                    @{$tsnvs{$last_id}{$i}} = ("-", 0, 0, 0);
                     $stats[7]++;
                 }
             }
 
             #calculate median depth
             my $num_depths = scalar @depths;
-            print STDERR "num_depths = $num_depths\n";
             @depths = sort{$a <=> $b} @depths;
             my $mid = ($num_depths / 2) - 0.5;
             my $median;
@@ -363,22 +375,25 @@ while (my $vline = <$vin>){
                 my $one = $two - 1;
                 $median = ($depths[$one] + $depths[$two]) / 2;
             }
-            print STDERR "Median depth: $median\n";
-            print STDERR "Maximum depth: $depths[$#depths]\n";
             my $maxdep = $median * $maxfold;
-            print STDERR "Maximum depth threshold: $maxdep\n";
             #Filter SNVs above maximum depth
-            foreach my $id (keys %snvs){
-                foreach my $pos (keys %{$snvs{$id}}){
-                    next unless $snvs{$id}{$pos}{$gen};
-                    my ($alt, $total_depth, $adep, $fulldepth) = @{$snvs{$id}{$pos}{$gen}};
+            foreach my $id (keys %tsnvs){
+                foreach my $pos (keys %{$tsnvs{$id}}){
+                    my ($alt, $total_depth, $adep, $fulldepth) = @{$tsnvs{$id}{$pos}};
                     if ($total_depth > $maxdep){
                         $stats[3]++;
                         $stats[8]++;
-                        print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
-                        #@{$snvs{$id}{$pos}{$gen}} = ("F", $total_depth, $adep, $fulldepth);
+                        #print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
+                        @{$tsnvs{$id}{$pos}} = ("F", $total_depth, $adep, $fulldepth);
                         $totalsnps--;
                     }
+                }
+            }
+            ## dump to file
+            foreach my $id (keys %tsnvs){
+                foreach my $pos (keys %{$tsnvs{$id}}){
+                    my @tmp = @{$tsnvs{$id}{$pos}};
+                    print $thout "$id\t$pos\t$gen\t", join("\t", @tmp), "\n";
                 }
             }
             my $totloci = $stats[8] + $totalsnps;
@@ -404,7 +419,8 @@ while (my $vline = <$vin>){
         #unlink ("$pid.hash.txt");
         foreach my $i (0 .. $#order){
             if ($pid == $order[$i][2]){
-                print STDERR "Finished processing $order[$i][0]\n";
+                $vcount++;
+                print STDERR "Finished processing $order[$i][0] ($vcount/$vtot)\n";
                 last;
             }
         }
@@ -426,7 +442,8 @@ while (my $pid = wait){
     #unlink ("$pid.hash.txt");
     foreach my $i (0 .. $#order){
         if ($pid == $order[$i][2]){
-            print STDERR "Finished processing $order[$i][0]\n";
+            $vcount++;
+            print STDERR "Finished processing $order[$i][0] ($vcount/$vtot)\n";
             last;
         }
     }
@@ -443,7 +460,7 @@ foreach my $slice (@order){
         print $sout "$line\n";
     }
     close ($in);
-    unlink("$pid.stats.txt");
+    #unlink("$pid.stats.txt");
 }
 close $sout;
 
