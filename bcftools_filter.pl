@@ -13,6 +13,8 @@ Generate the input file by running:
 samtools mpileup -E -M 0 -Q 25 -q 30 -m 2 -D -S -g -f <reference.fasta> <alignment.bam> | bcftools view -Icg - 
 (for samtools and bcftools versions 0.1.19)
 
+Will also accept gzipped or bgzipped vcf files
+
 Output will be sequence file of reference strain where SNVs passing filters
 are substituted into the sequence.  Missing data or filtered SNVs will be
 replaced with gap characters '-'
@@ -149,7 +151,15 @@ if ($id){
 print STDERR "Total sequence length: $totseqleng\n";
 
 #Read and filter the bcftools results
-open (my $in, "<$ARGV[0]") or die "ERROR: Can't open $ARGV[0]: $!\n";
+my $file = $ARGV[0];
+my $in;
+if ($file =~ m/\.bgz$/){
+    open ($in, "bgzip -cd $file | ")
+} elsif ($file =~ m/\.gz$/){
+    open ($in, "gzip -cd $file | ")
+} else {
+    open ($in, "<file") or die "ERROR: Can't open $file: $!\n";
+}
 my %snvs; #contig, position, base, depth
 my %missing_or_filtered;
 #stats: below_min_qual(0), below_min_consensus(1), below_min_depth(2), above_max_depth(3), unidirectional(4), non-homozygous(5), masked(6), missing(7), filtered(8)

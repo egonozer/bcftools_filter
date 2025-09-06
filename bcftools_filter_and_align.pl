@@ -1,6 +1,11 @@
 #!/usr/bin/perl
 
-my $version = "0.2";
+my $version = "0.3";
+
+## Changes from v0.2
+## Replace large snv hash with arrays (memory saving)
+## Second forking step for post-processing followed by rejoining output files. Should save lots of memory for very large data sets
+## Removed redundancies and improve efficiency 
 
 ## Will take multiple vcf files as input, filter SNPs based on criteria given,
 ## then output a fasta alignment of just variant positions. Will also output
@@ -8,6 +13,7 @@ my $version = "0.2";
 
 use strict;
 use warnings;
+use List::Util qw/sum/;
 
 my $usage = "
 
@@ -104,6 +110,59 @@ my $maskfile    = $opt_m if $opt_m;
 my $outid       = $opt_o ? $opt_o: "output";
 my $threads     = $opt_t ? $opt_t : 2;
 
+## Read in reference sequence and assign dummies
+open (my $fin, "<$reffile") or die "ERROR: Can't open $reffile: $!\n";
+my @seqs;
+my %seqlengs;
+my %seqdum;
+my %seqdum_rev;
+my ($seqleng, $totseqleng, $maxleng) = (0) x 3;
+my ($id, $id_tell, $seq_tell);
+while (my $line = <$fin>){
+    my $tell = tell $fin;
+    if ($line =~ m/^>/){
+        if ($id){
+            my $distance = $seq_tell - $id_tell;
+            push @seqs, ([$id, $id_tell, $distance]);
+            my $order = $#seqs;
+            $seqdum{$id} = $order;
+            $seqdum_rev{$order} = $id;
+            $seqlengs{$order} = $seqleng;
+            $maxleng = $seqleng if $seqleng >= $maxleng;
+            $totseqleng += $seqleng;
+            print STDERR "$id: $seqleng bp\n";
+            $seqleng = 0;
+        }
+        $id_tell = $tell;
+        chomp $line;
+        $id = substr($line, 1);
+        $id =~ s/\s.*$//;
+        next;
+    }
+    $seq_tell = $tell;
+    chomp $line;
+    $line =~ s/\s//g;
+    $seqleng += length($line);
+}
+close ($fin);
+if ($id){
+    my $distance = $seq_tell - $id_tell;
+    push @seqs, ([$id, $id_tell, $distance]);
+    my $order = $#seqs;
+    $seqdum{$id} = $order;
+    $seqdum_rev{$order} = $id;
+    $seqlengs{$order} = $seqleng;
+    $maxleng = $seqleng if $seqleng >= $maxleng;
+    $totseqleng += $seqleng;
+    print STDERR "$id: $seqleng bp\n";
+    $seqleng = 0;
+}
+print STDERR "Total reference sequences: ", scalar @seqs, "\n";
+print STDERR "Total reference sequence length: $totseqleng, maximum length: $maxleng\n";
+## Set number of leading zeroes for position and sequence numbers 
+my $lzp = int((log($maxleng)/log(10))+1);
+my $lzs = int((log(scalar @seqs)/log(10))+1);
+
 my %mask;
 if ($maskfile){
     my $totmask = 0;
@@ -121,7 +180,7 @@ if ($maskfile){
             $masklines++;
             my ($start, $stop) = ($1, $2);
             for my $i ($start .. $stop){
-                $mask{$id}{$i} = 1;
+                $mask{"$id-$i"} = 1;
                 $totmask++;
             }
         }
@@ -129,43 +188,6 @@ if ($maskfile){
     close ($in);
     print STDERR "Total of $totmask masked positions in $masklines intervals.\n";
 }
-
-## Read in reference sequence
-open (my $fin, "<$reffile") or die "ERROR: Can't open $reffile: $!\n";
-my @seqs;
-my %seqlengs;
-my $totseqleng = 0;
-my ($id, $seq);
-while (my $line = <$fin>){
-    chomp $line;
-    next if $line =~ m/^\s*$/;
-    if ($line =~ m/^>/){
-        if ($id){
-            push @seqs, ([$id, $seq]);
-            my $leng = length($seq);
-            $seqlengs{$id} = $leng;
-            $totseqleng += $leng;
-            print STDERR "$id: $leng bp\n";
-            $seq = "";
-        }
-        $id = substr($line, 1);
-        $id =~ s/\s.*$//;
-        next;
-    }
-    $line =~ s/\s//g;
-    $seq .= $line;
-}
-close ($fin);
-if ($id){
-    push @seqs, ([$id, $seq]);
-    my $leng = length($seq);
-    $seqlengs{$id} = $leng;
-    $totseqleng += $leng;
-    print STDERR "$id: $leng bp\n";
-    $seq = "";
-}
-print STDERR "Total reference sequences: ", scalar @seqs, "\n";
-print STDERR "Total reference sequence length: $totseqleng\n";
 
 #Read and filter the vcf files
 my $vtot = 0;
@@ -176,7 +198,9 @@ while (my $vline = <$vin>) {
     $vtot++;
 }
 close ($vin);
+my $lzv = int((log($vtot)/log(10))+1);
 
+my %baseidx = ( A => 0, C => 1, G => 2, T => 3);
 my @order;
 my %snvs; #contig, position, base, depth
 my $num_threads_running = 0;
@@ -191,24 +215,27 @@ my $num_threads_running = 0;
   #missing(7)
   #filtered(8)
 print STDERR "Starting vcf file processing\n";
-my $vcount = 0;
+my ($pcount, $vcount) = (0) x 2;
+my %pid_hash;
 open ($vin, "<$vcffile") or die "ERROR: Can't open $vcffile: $!\n";
 while (my $vline = <$vin>){
     if ($num_threads_running < $threads){
         chomp $vline;
         next if $vline =~ m/^\s*$/;
         my ($path, $gen) = split("\t", $vline);
+        $pcount++;
+        my $tpref = sprintf("%0${lzv}d", $pcount);
         my $pid = fork;
         if (0 == $pid){
-            my $tpref = "$$";
-            open (my $tsout, ">$tpref.stats.txt") or die "ERROR: Can't open $tpref.stats.txt\n";
-            open (my $thout, ">$tpref.hash.txt") or die "ERROR: Can't open $tpref.hash.txt\n";
-            my %tsnvs;
+            #my $tpref = "$$";
+            open (my $tsout, ">tstats.$tpref.txt") or die "ERROR: Can't open tstats.$tpref.txt for writing: $!\n";
+            open (my $thout, ">thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt for writing: $!\n";
+            my @tsnvs;
             my $in;
             if ($path =~ m/\.gz$/){
                 open ($in, "gzip -cd $path | ");
             } else {
-                open ($in, "<$path") or die "ERROR: Can't open $path: $!\n";
+                open ($in, "<$path") or die "ERROR: Can't open $path ($gen): $!\n";
             }
             my @stats = (0) x 9;
             my @depths;
@@ -222,42 +249,28 @@ while (my $vline = <$vin>){
                 next if $line =~ m/^\s*#/;
                 my @tmp = split("\t", $line);
                 my ($id, $pos, $ref, $alt, $qual, $stuff, $format, $format_val) = @tmp[0,1,3,4,5,7,8,9];
+                my $id_dum = $seqdum{$id};
                 next if (length($ref) > 1 or length($alt) > 1); #Skip indels
-                if ($id ne $last_id){
+                if ($id_dum ne $last_id){
                     if ($last_pos != 0){
                         my $last_leng = $seqlengs{$last_id};
                         if ($last_pos < $last_leng){
                             for my $i ($last_pos + 1 .. $last_leng){
-                                #print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
-                                @{$tsnvs{$last_id}{$i}} = ("-", 0, 0, 0);
+                                print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
                                 $stats[7]++;
-                            }
-                        }
-                        for my $i (0 .. $#seqs){
-                            my ($ctg, $seq) = @{$seqs[$i]};
-                            if ($ctg eq $last_id){
-                                my $start = $i + 1;
-                                my $nextid = $seqs[$start][0];
-                                while ($nextid ne $id){
-                                    $start++;
-                                    $nextid = $seqs[$start][0];
-                                }
-                                last;
                             }
                         }
                     }
                     if ($pos > 1){
                         for my $i (1 .. $pos - 1){
-                            #print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
-                            @{$tsnvs{$id}{$i}} = ("-", 0, 0, 0);
+                            print $thout "$id_dum\t$i\t$gen\t-\t0\t0\t0\n";
                             $stats[7]++;
                         }
                     }
                 }
                 if ($last_pos > 0 and $last_pos + 1 != $pos){
                     for my $i ($last_pos + 1 .. $pos - 1){
-                        #print $thout "$id\t$i\t$gen\t-\t0\t0\t0\n";
-                        @{$tsnvs{$id}{$i}} = ("-", 0, 0, 0);
+                        print $thout "$id_dum\t$i\t$gen\t-\t0\t0\t0\n";
                         $stats[7]++;
                     }
                 }
@@ -284,15 +297,15 @@ while (my $vline = <$vin>){
                 ## Count all positions (snp or no snp) with depths below the minimum
                 my $filt = 0;
                 my @filt_types;
+                my $printed;
                 if ($total_depth < $mindep){
-                    #print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
-                    @{$tsnvs{$id}{$pos}} = ("F", $total_depth, $adep, $fulldepth);
+                    print $thout "$id_dum\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
                     $stats[2]++;
                     $filt++;
                     push @filt_types, "bn";
+                    $printed = 1;
                 }
                 if ($alt ne "."){
-
                     if ($qual < $minqual){
                         $filt++;
                         $stats[0]++;
@@ -326,39 +339,34 @@ while (my $vline = <$vin>){
                         $stats[5]++;
                         push @filt_types, "nh";
                     }
-                    if ($mask{$id}{$pos}){
+                    if ($mask{"$id-$pos"}){
                         $filt++;
                         $stats[6]++;
                         push @filt_types, "ma";
                     }
                     if ($filt > 0){
                         $stats[8]++;
-                        #print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
-                        @{$tsnvs{$id}{$pos}} = ("F", $total_depth, $adep, $fulldepth);
+                        print $thout "$id_dum\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n" unless $printed;
                     } elsif ($filt == 0) {
-                        #print $thout "$id\t$pos\t$gen\t$alt\t$total_depth\t$adep\t$fulldepth\n";
-                        @{$tsnvs{$id}{$pos}} = ($alt, $total_depth, $adep, $fulldepth);
                         if ($alt =~ m/,/){
-                            my $first = (split",", $alt)[0];
-                            #print $thout "$id\t$pos\t$gen\t$first\t$total_depth\t$adep\t$fulldepth\n";
-                            @{$tsnvs{$id}{$pos}} = ($first, $total_depth, $adep, $fulldepth);
+                            $alt = (split",", $alt)[0];
                         }
+                        push @tsnvs, "$id_dum,$pos,$alt,$total_depth,$adep,$fulldepth";
                         $totalsnps++;
                     }
                 } else {
                     #Eliminate non-SNP positions with high-qual coverage less than the minimum depth
 
                 }
-                $last_id = $id;
+                $last_id = $id_dum;
                 $last_pos = $pos;
             }
             close ($in);
             my $last_leng = $seqlengs{$last_id};
-            die "\nERROR: No file given\n" unless $last_leng;
+            die "\nERROR: No file given (id:$gen, last_id:$last_id)\n" unless $last_leng;
             if ($last_pos < $last_leng){
                 for my $i ($last_pos + 1 .. $last_leng){
-                    #print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
-                    @{$tsnvs{$last_id}{$i}} = ("-", 0, 0, 0);
+                    print $thout "$last_id\t$i\t$gen\t-\t0\t0\t0\n";
                     $stats[7]++;
                 }
             }
@@ -375,26 +383,18 @@ while (my $vline = <$vin>){
                 my $one = $two - 1;
                 $median = ($depths[$one] + $depths[$two]) / 2;
             }
+            ##### Should it be median depth per chromosome / contig???? (think plasmids, organelles ...)
             my $maxdep = $median * $maxfold;
             #Filter SNVs above maximum depth
-            foreach my $id (keys %tsnvs){
-                foreach my $pos (keys %{$tsnvs{$id}}){
-                    my ($alt, $total_depth, $adep, $fulldepth) = @{$tsnvs{$id}{$pos}};
-                    if ($total_depth > $maxdep){
-                        $stats[3]++;
-                        $stats[8]++;
-                        #print $thout "$id\t$pos\t$gen\tF\t$total_depth\t$adep\t$fulldepth\n";
-                        @{$tsnvs{$id}{$pos}} = ("F", $total_depth, $adep, $fulldepth);
-                        $totalsnps--;
-                    }
+            foreach (@tsnvs){
+                my ($id_dum, $pos, $alt, $total_depth, $adep, $fulldepth) = split(",", $_);
+                if ($total_depth > $maxdep){
+                    $stats[3]++;
+                    $stats[8]++;
+                    $alt = "F";
+                    $totalsnps--;
                 }
-            }
-            ## dump to file
-            foreach my $id (keys %tsnvs){
-                foreach my $pos (keys %{$tsnvs{$id}}){
-                    my @tmp = @{$tsnvs{$id}{$pos}};
-                    print $thout "$id\t$pos\t$gen\t", join("\t", @tmp), "\n";
-                }
+                print $thout "$id_dum\t$pos\t$gen\t$alt\t$total_depth\t$adep\t$fulldepth\n";
             }
             my $totloci = $stats[8] + $totalsnps;
             print $tsout "$gen\t$median\t$stats[7]\t$stats[2]\t$totloci\t$stats[8]\t$stats[0]\t$stats[1]\t$stats[3]\t$stats[4]\t$stats[5]\t$stats[6]\t$totalsnps\n";
@@ -402,28 +402,33 @@ while (my $vline = <$vin>){
             close($tsout);
             exit($?)
         }
-        push @order, ([$gen, $path, $pid]);
+        @{$pid_hash{$pid}} = ($gen, $tpref);
+        push @order, ([$gen, $path, $tpref]);
         $num_threads_running++;
     }
     if ($num_threads_running == $threads){
         my $pid = wait;
         my $status = $?;
-        die "ERROR: Process $pid returned a status of $status\n" if ($status != 0);
-        open (my $tin, "<$pid.hash.txt") or die "ERROR: Can't open $pid.hash.txt: $!\n";
+        my ($gen, $tpref) = @{$pid_hash{$pid}};
+        delete $pid_hash{$pid};
+        die "ERROR: Process $pid ($gen prefix $tpref) returned a status of $status\n" if ($status != 0);
+        open (my $tin, "<thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt: $!\n";
         while (my $tline = <$tin>){
             chomp $tline;
-            my ($id, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
-            @{$snvs{$id}{$pos}{$gen}} = ($alt, $tdep, $adep, $fdep);
+            my ($id_dum, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
+            my $idlz = sprintf("%0${lzs}d", $id_dum);
+            my $polz = sprintf("%0${lzp}d", $pos);
+            unless ($snvs{"$idlz-$polz"}){
+                $snvs{"$idlz-$polz"} = "0,0,0,0,0";
+            }
+            my @basearray = split(",", $snvs{"$idlz-$polz"});
+            my $bpos = exists $baseidx{uc($alt)} ? $baseidx{uc($alt)} : 4;
+            $basearray[$bpos]++;
+            $snvs{"$idlz-$polz"} = join(",", @basearray);
         }
         close ($tin);
-        #unlink ("$pid.hash.txt");
-        foreach my $i (0 .. $#order){
-            if ($pid == $order[$i][2]){
-                $vcount++;
-                print STDERR "Finished processing $order[$i][0] ($vcount/$vtot)\n";
-                last;
-            }
-        }
+        $vcount++;
+        print STDERR "Finished pre-processing $gen ($vcount/$vtot)\n";
         $num_threads_running--;
     }
 }
@@ -431,113 +436,204 @@ close ($vin);
 while (my $pid = wait){
     last if $pid < 0;
     my $status = $?;
-    die "ERROR: Process $pid returned a status of $status\n" if ($status != 0);
-    open (my $tin, "<$pid.hash.txt") or die "ERROR: Can't open $pid.hash.txt: $!\n";
+    my ($gen, $tpref) = @{$pid_hash{$pid}};
+    delete $pid_hash{$pid};
+    die "ERROR: Process $pid ($gen prefix $tpref) returned a status of $status\n" if ($status != 0);
+    open (my $tin, "<thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt: $!\n";
     while (my $tline = <$tin>){
         chomp $tline;
-        my ($id, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
-        @{$snvs{$id}{$pos}{$gen}} = ($alt, $tdep, $adep, $fdep);
+        my ($id_dum, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
+        my $idlz = sprintf("%0${lzs}d", $id_dum);
+        my $polz = sprintf("%0${lzp}d", $pos);
+        unless ($snvs{"$idlz-$polz"}){
+            $snvs{"$idlz-$polz"} = "0,0,0,0,0";
+        }
+        my @basearray = split(",", $snvs{"$idlz-$polz"});
+        my $bpos = exists $baseidx{uc($alt)} ? $baseidx{uc($alt)} : 4;
+        $basearray[$bpos]++;
+        $snvs{"$idlz-$polz"} = join(",", @basearray);
     }
     close ($tin);
-    #unlink ("$pid.hash.txt");
-    foreach my $i (0 .. $#order){
-        if ($pid == $order[$i][2]){
-            $vcount++;
-            print STDERR "Finished processing $order[$i][0] ($vcount/$vtot)\n";
-            last;
-        }
-    }
+    $vcount++;
+    print STDERR "Finished pre-processing $gen ($vcount/$vtot)\n";
     $num_threads_running--;
 }
+undef %mask;
 
-open (my $sout, ">$outid.stats.txt");
-print $sout "id\tmedian_depth\tmissing\t<min_depth\tsnvs\tfilt_snvs\t<min_qual\t<min_consensus\t>max_depth\tunidir\tnon-homozyg\tmasked\tsnvs_out\n";
-foreach my $slice (@order){
-    my ($gen, $path, $pid) = @{$slice};
-    open (my $in, "<$pid.stats.txt") or die "ERROR: Can't open $pid.stats.txt: $!\n";
-    while (my $line = <$in>){
-        chomp $line;
-        print $sout "$line\n";
+print STDERR "Total unique sites: ", scalar keys %snvs, "\n";
+print STDERR "Counting variant sites ... ";
+my ($seqidx, $seq) = (-1) x 2;
+foreach my $idpos (sort {$a cmp $b} keys %snvs){
+    my @array = split(",", $snvs{$idpos});
+    my $gapsum = pop @array;
+    my $basecount = 0;
+    foreach (@array){
+        $basecount ++ if $_ > 0;
     }
-    close ($in);
-    #unlink("$pid.stats.txt");
-}
-close $sout;
-
-print STDERR "Processing variants\n";
-my @results;
-foreach (@seqs){
-    my ($id, $seq) = @{$_};
-    if ($snvs{$id}){
-        my %hash = %{$snvs{$id}};
-        delete $snvs{$id}; ## free space
-        foreach my $pos (sort{$a <=> $b} keys %hash){
-            my $refbase = substr($seq, ($pos - 1), 1);
-            my @bases;
-            my %bhash;
-            if ($opt_i){
-                push @bases, ([$refbase, "NA", "NA", "NA"]);
-                $bhash{$refbase}++;
-            }
-            foreach my $slice (@order){
-                my ($gen, $path) = @{$slice};
-                if ($hash{$pos}{$gen}){
-                    my ($base, $total_depth, $adep, $fulldepth) = @{$hash{$pos}{$gen}};
-                    delete $hash{$pos}{$gen}; # free space
-                    push @bases, ([$base, $total_depth, $adep, $fulldepth]);
-                    $base = "-" if $base eq "F";
-                    $bhash{$base}++;
-                } else {
-                    push @bases, ([$refbase, "?", "?", "?"]);
-                    $bhash{$refbase}++;
-                }
-            }
-
-            my $bcount = scalar keys %bhash;
-            next if $bcount == 1;
-            next if ($bcount == 2 and $bhash{"-"});
-            my @tmp = ($id, $pos, @bases);
-            push @results, [@tmp];
+    my $basesum = sum(@array);
+    my $skip;
+    $skip = 1 if $basecount == 0;
+    if ($basesum + $gapsum == $vtot){
+        if (!$opt_i){
+            $skip = 1 if $basecount == 1;
         }
     }
+    if ($skip){
+        delete $snvs{$idpos};
+        next;
+    }
+    my ($id_dum, $pos) = split("-", $idpos);
+    my $id_dum_nz = 0 + $id_dum;
+    while ($id_dum_nz != $seqidx){
+        $seqidx++;
+        if ($id_dum_nz == $seqidx){
+            my ($seqid, $idx, $dist) = @{$seqs[$seqidx]};
+            open (my $in, "$reffile");
+            seek $in, $idx, 0;
+            read $in, $seq, $dist;
+            close ($in);
+            $seq =~ s/\s//g;
+        }
+    }
+    my $refbase = substr($seq, ($pos - 1), 1);
+    $snvs{$idpos} = $refbase;
+}
+print STDERR "total variant sites:", scalar keys %snvs, "\n";
+
+## process hashes in parallel and stats
+$num_threads_running = 0;
+$vcount = 0;
+my %npid_hash;
+open (my $sout, ">$outid.stats.txt") or die "ERROR: Can't open $outid.stats.txt for writing: $!\n";
+print $sout "id\tmedian_depth\tmissing\t<min_depth\tsnvs\tfilt_snvs\t<min_qual\t<min_consensus\t>max_depth\tunidir\tnon-homozyg\tmasked\tsnvs_out\n";
+foreach my $j (0 .. $#order){
+    if ($num_threads_running < $threads){
+        my ($gen, $path, $tpref) = @{$order[$j]};
+        my $npid = fork;
+        if (0 == $npid) {
+            open (my $tin, "<thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt: $!\n";
+            my @tsnvs;
+            while (my $tline = <$tin>){
+                chomp $tline;
+                my ($id, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
+                my $idlz = sprintf("%0${lzs}d", $id);
+                my $polz = sprintf("%0${lzp}d", $pos);
+                push @tsnvs, "$idlz-$polz#$alt,$fdep,$tdep,$adep" if $snvs{"$idlz-$polz"};
+            }
+            close ($tin);
+            @tsnvs = sort{$a cmp $b} @tsnvs;
+
+            open (my $pout, ">tproc.$tpref.txt") or die "ERROR: Can't open tproc.$tpref.txt ($gen) for writing: $!\n";
+            my ($tidpos, $tval) = ("X") x 2;
+            ($tidpos, $tval) = split("#", shift @tsnvs) if @tsnvs;
+            foreach my $idpos (sort{$a cmp $b} keys %snvs){
+                my $refbase = $snvs{$idpos};
+                my $val = "$refbase,?,?,?";
+                if ($tidpos eq $idpos){
+                    $val = $tval;
+                    ($tidpos, $tval) = split("#", shift @tsnvs) if @tsnvs;
+                }
+                print $pout "$val\n";
+            }
+            close ($pout);
+            unlink("thash.$tpref.txt");
+            exit;
+        }
+        $num_threads_running++;
+        $npid_hash{$npid} = $gen;
+        ## process stats
+        open (my $in, "<tstats.$tpref.txt") or die "ERROR: Can't open tstats.$tpref.txt: $!\n";
+        while (my $line = <$in>){
+            chomp $line;
+            print $sout "$line\n";
+        }
+        close ($in);
+        unlink("tstats.$tpref.txt");
+    }
+    if ($num_threads_running == $threads){
+        my $npid = wait;
+        my $status = $?;
+        die "ERROR: Process $npid ($npid_hash{$npid}) returned a status of $status\n" if ($status != 0);
+        $num_threads_running--;
+        $vcount++;
+        print STDERR "\rFinished post-processing $vcount/$vtot";
+    }
+}
+close ($sout);
+while (my $npid = wait){
+    last if $npid < 0;
+    my $status = $?;
+    die "ERROR: Process $npid ($npid_hash{$npid}) returned a status of $status\n" if ($status != 0);
+    $num_threads_running--;
+    $vcount++;
+    print STDERR "\rFinished post-processing $vcount/$vtot";
 }
 
-print STDERR "Total SNP loci:", scalar @results, "\n";
-
-## Output the alignment sequence and table
-print STDERR "Outputting\n";
-my @fasta;
-open (my $tout, ">$outid.table.txt");
+## Process and output table
+my $start_sites = scalar keys %snvs;
+print STDERR "\nOutputting table: 0/$start_sites";
+open (my $tout, ">$outid.table.txt") or die "ERROR: Can't open $outid.table.txt for writing: $!\n";
 print $tout "id\tpos";
 if ($opt_i){
    print $tout "\tref";
 }
+my @handarray;
 foreach (@order){
-    my ($gen, $path) = @{$_};
+    my ($gen, $path, $tpref) = @{$_};
     print $tout "\t$gen";
+    open (my $in, "<tproc.$tpref.txt") or die "ERROR: Can't open tproc.$tpref.txt ($gen) for reading: $!\n";
+    push @handarray, $in;
 }
 print $tout "\n";
-foreach my $slice (@results){
-    my @tmp = @{$slice};
-    my ($contig, $pos, @bases) = @{$slice};
-    print $tout "$contig\t$pos";
-    for my $i (0 .. $#bases){
-        my ($base, $total_depth, $adep, $fulldepth) = @{$bases[$i]};
-        print $tout "\t$base,$fulldepth,$total_depth,$adep";
-        $base = "-" if $base eq "F";
-        $fasta[$i] .= $base;
+my $in_snvs = 0;
+my $total_snvs = 0;
+foreach my $idpos (sort{$a cmp $b} keys %snvs) {
+    $in_snvs++;
+    print STDERR "\rOutputting table: $in_snvs/$start_sites" if $in_snvs % 100 == 0;
+    my ($id_dum, $pos) = split("-", $idpos);
+    $id_dum+=0;
+    $pos+=0;
+    #my ($id_dum, $pos, $refbase) = @{$ref_results[$i]};
+    my $id = $seqdum_rev{$id_dum};
+    my $outline = "$id\t$pos";
+    $outline .= "\t$snvs{$idpos}" if $opt_i;
+    for my $j (0 .. $#order){
+        chomp(my $val = readline $handarray[$j]);
+        $outline .= "\t$val";
     }
-    print $tout "\n";
+    print $tout "$outline\n";
+    $total_snvs++;
 }
-close ($tout);
-open (my $fout, ">$outid.alignment.fasta");
+print STDERR "\rOutputting table: $in_snvs/$start_sites\n"; 
+
+## Output alignment
+print STDERR "Outputting alignment\n";
+open (my $fout, ">$outid.alignment.fasta") or die "ERROR: Can't open $outid.alignment.fasta for writing: $!\n";
 if ($opt_i){
-    my $seq = shift @fasta;
-    print $fout ">ref\n$seq\n";
+    print $fout ">ref\n";
+    foreach my $idpos (sort {$a cmp $b} keys %snvs) {
+        print $fout "$snvs{$idpos}";
+    }
+    print $fout "\n";
 }
-foreach (@order){
-    my ($gen, $path) = @{$_};
-    my $seq = shift @fasta;
-    print $fout ">$gen\n$seq\n";
+my $outcount = 0;
+for my $i (0 .. $#order){
+    my ($gen, $path, $tpref) = @{$order[$i]};
+    close ($handarray[$i]); ## close the open filehandles from table step above
+    print $fout ">$gen\n";
+    my $count = -1;
+    open (my $in, "<tproc.$tpref.txt") or die "ERROR: Can't open tproc.$tpref.txt ($gen) for reading: $!\n";
+    while (my $line = <$in>){
+        $count++;
+        my $base = substr($line, 0, 1);
+        $base = "-" if $base eq "F";
+        print $fout "$base";
+    }
+    print $fout "\n";
+    $outcount++;
+    print STDERR "$gen ($outcount/", scalar @order, ")\n";
+    close ($in);
+    unlink ("tproc.$tpref.txt");
 }
 close ($fout);
+print STDERR "\nDone!\n";
