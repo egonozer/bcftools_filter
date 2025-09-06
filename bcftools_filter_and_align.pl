@@ -5,7 +5,7 @@ my $version = "0.3";
 ## Changes from v0.2
 ## Replace large snv hash with arrays (memory saving)
 ## Second forking step for post-processing followed by rejoining output files. Should save lots of memory for very large data sets
-## Removed redundancies and improve efficiency 
+## Removed redundancies and improve efficiency
 
 ## Will take multiple vcf files as input, filter SNPs based on criteria given,
 ## then output a fasta alignment of just variant positions. Will also output
@@ -159,7 +159,7 @@ if ($id){
 }
 print STDERR "Total reference sequences: ", scalar @seqs, "\n";
 print STDERR "Total reference sequence length: $totseqleng, maximum length: $maxleng\n";
-## Set number of leading zeroes for position and sequence numbers 
+## Set number of leading zeroes for position and sequence numbers
 my $lzp = int((log($maxleng)/log(10))+1);
 my $lzs = int((log(scalar @seqs)/log(10))+1);
 
@@ -198,7 +198,12 @@ while (my $vline = <$vin>) {
     $vtot++;
 }
 close ($vin);
+
+## calculate number of leading zeros needed in temporary names based on total number of input vcf files to process.  
 my $lzv = int((log($vtot)/log(10))+1);
+## Unique temporary id for keeping temporary files from other potential parallel processes on in a cluster separate. 
+my $tempid = $$;
+print STDERR "Process ID: $tempid\n";
 
 my %baseidx = ( A => 0, C => 1, G => 2, T => 3);
 my @order;
@@ -228,8 +233,8 @@ while (my $vline = <$vin>){
         my $pid = fork;
         if (0 == $pid){
             #my $tpref = "$$";
-            open (my $tsout, ">tstats.$tpref.txt") or die "ERROR: Can't open tstats.$tpref.txt for writing: $!\n";
-            open (my $thout, ">thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt for writing: $!\n";
+            open (my $tsout, ">tstats.$tempid.$tpref.txt") or die "ERROR: Can't open tstats.$tempid.$tpref.txt for writing: $!\n";
+            open (my $thout, ">thash.$tempid.$tpref.txt") or die "ERROR: Can't open thash.$tempid.$tpref.txt for writing: $!\n";
             my @tsnvs;
             my $in;
             if ($path =~ m/\.gz$/){
@@ -412,7 +417,7 @@ while (my $vline = <$vin>){
         my ($gen, $tpref) = @{$pid_hash{$pid}};
         delete $pid_hash{$pid};
         die "ERROR: Process $pid ($gen prefix $tpref) returned a status of $status\n" if ($status != 0);
-        open (my $tin, "<thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt: $!\n";
+        open (my $tin, "<thash.$tempid.$tpref.txt") or die "ERROR: Can't open thash.$tempid.$tpref.txt: $!\n";
         while (my $tline = <$tin>){
             chomp $tline;
             my ($id_dum, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
@@ -439,7 +444,7 @@ while (my $pid = wait){
     my ($gen, $tpref) = @{$pid_hash{$pid}};
     delete $pid_hash{$pid};
     die "ERROR: Process $pid ($gen prefix $tpref) returned a status of $status\n" if ($status != 0);
-    open (my $tin, "<thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt: $!\n";
+    open (my $tin, "<thash.$tempid.$tpref.txt") or die "ERROR: Can't open thash.$tempid.$tpref.txt: $!\n";
     while (my $tline = <$tin>){
         chomp $tline;
         my ($id_dum, $pos, $gen, $alt, $tdep, $adep, $fdep) = split("\t", $tline);
@@ -511,7 +516,7 @@ foreach my $j (0 .. $#order){
         my ($gen, $path, $tpref) = @{$order[$j]};
         my $npid = fork;
         if (0 == $npid) {
-            open (my $tin, "<thash.$tpref.txt") or die "ERROR: Can't open thash.$tpref.txt: $!\n";
+            open (my $tin, "<thash.$tempid.$tpref.txt") or die "ERROR: Can't open thash.$tempid.$tpref.txt: $!\n";
             my @tsnvs;
             while (my $tline = <$tin>){
                 chomp $tline;
@@ -523,7 +528,7 @@ foreach my $j (0 .. $#order){
             close ($tin);
             @tsnvs = sort{$a cmp $b} @tsnvs;
 
-            open (my $pout, ">tproc.$tpref.txt") or die "ERROR: Can't open tproc.$tpref.txt ($gen) for writing: $!\n";
+            open (my $pout, ">tproc.$tempid.$tpref.txt") or die "ERROR: Can't open tproc.$tempid.$tpref.txt ($gen) for writing: $!\n";
             my ($tidpos, $tval) = ("X") x 2;
             ($tidpos, $tval) = split("#", shift @tsnvs) if @tsnvs;
             foreach my $idpos (sort{$a cmp $b} keys %snvs){
@@ -536,19 +541,19 @@ foreach my $j (0 .. $#order){
                 print $pout "$val\n";
             }
             close ($pout);
-            unlink("thash.$tpref.txt");
+            unlink("thash.$tempid.$tpref.txt");
             exit;
         }
         $num_threads_running++;
         $npid_hash{$npid} = $gen;
         ## process stats
-        open (my $in, "<tstats.$tpref.txt") or die "ERROR: Can't open tstats.$tpref.txt: $!\n";
+        open (my $in, "<tstats.$tempid.$tpref.txt") or die "ERROR: Can't open tstats.$tempid.$tpref.txt: $!\n";
         while (my $line = <$in>){
             chomp $line;
             print $sout "$line\n";
         }
         close ($in);
-        unlink("tstats.$tpref.txt");
+        unlink("tstats.$tempid.$tpref.txt");
     }
     if ($num_threads_running == $threads){
         my $npid = wait;
@@ -581,7 +586,7 @@ my @handarray;
 foreach (@order){
     my ($gen, $path, $tpref) = @{$_};
     print $tout "\t$gen";
-    open (my $in, "<tproc.$tpref.txt") or die "ERROR: Can't open tproc.$tpref.txt ($gen) for reading: $!\n";
+    open (my $in, "<tproc.$tempid.$tpref.txt") or die "ERROR: Can't open tproc.$tempid.$tpref.txt ($gen) for reading: $!\n";
     push @handarray, $in;
 }
 print $tout "\n";
@@ -604,7 +609,7 @@ foreach my $idpos (sort{$a cmp $b} keys %snvs) {
     print $tout "$outline\n";
     $total_snvs++;
 }
-print STDERR "\rOutputting table: $in_snvs/$start_sites\n"; 
+print STDERR "\rOutputting table: $in_snvs/$start_sites\n";
 
 ## Output alignment
 print STDERR "Outputting alignment\n";
@@ -622,7 +627,7 @@ for my $i (0 .. $#order){
     close ($handarray[$i]); ## close the open filehandles from table step above
     print $fout ">$gen\n";
     my $count = -1;
-    open (my $in, "<tproc.$tpref.txt") or die "ERROR: Can't open tproc.$tpref.txt ($gen) for reading: $!\n";
+    open (my $in, "<tproc.$tempid.$tpref.txt") or die "ERROR: Can't open tproc.$tempid.$tpref.txt ($gen) for reading: $!\n";
     while (my $line = <$in>){
         $count++;
         my $base = substr($line, 0, 1);
@@ -633,7 +638,7 @@ for my $i (0 .. $#order){
     $outcount++;
     print STDERR "$gen ($outcount/", scalar @order, ")\n";
     close ($in);
-    unlink ("tproc.$tpref.txt");
+    unlink ("tproc.$tempid.$tpref.txt");
 }
 close ($fout);
 print STDERR "\nDone!\n";
