@@ -9,9 +9,24 @@ bcftools_filter.pl [options] <results.vcf or piped from bcftools>
 
 Filters bcftools variant results produced from alignments against a reference.
 
-Generate the input file by running:
-samtools mpileup -E -M 0 -Q 25 -q 30 -m 2 -D -S -g -f <reference.fasta> <alignment.bam> | bcftools view -Icg - 
+Generate the input files by running:
+samtools mpileup \
+  -E -M 0 -Q 25 -q 30 -m 2 -D -S -g \
+  -f <reference.fasta> \
+  <alignment.bam> | \
+  bcftools view -Icg - \
+  > variants.vcf
 (for samtools and bcftools versions 0.1.19)
+
+OR
+
+bcftools mpileup \
+  -E -Q 25 -q 30 -m 2 -a DP,SP,AD,ADF,ADR \
+  -f <reference.fasta> \
+  -Ou <alignment.bam> | \
+  bcftools call -m -V indels -Ov --ploidy 1 - \
+  > variants.vcf
+(for bcftools version version 1.9)
 
 Will also accept gzipped or bgzipped vcf files
 
@@ -22,7 +37,7 @@ replaced with gap characters '-'
 Note: As a reminder, the default of samtools mpileup (without the '-B' flag) is
 to perform BAQ base quality calculation. Though this can avoid calling false
 SNPs around INDELs, it may result in some true bases matching the reference to
-be filtered out of the output. Hence there may less false SNPs at the cost of
+be filtered out of the output. Hence there may fewer false SNPs at the cost of
 more false gaps. Caveat emptor.
 
 Required:
@@ -40,9 +55,10 @@ Options:
         [default: 3]
   -r    minimum number of reads in each direction
         [default: 1]
-  -h    DO NOT require homozygositiy
+  -H    DO NOT require homozygositiy
         [default: only keep SNVs homozygous under diploid model, i.e. GT = 1/1]
-  -m    reference genome masking file, in interval format output by NCBI dustmaker,
+  -m    reference genome masking file, in interval format output by blast_masker.pl 
+        or NCBI dustmaker,
         i.e.
         >chromosome_name
         209 - 215
@@ -73,7 +89,7 @@ Options:
 ";
 
 use Getopt::Std;
-use vars qw( $opt_f $opt_q $opt_c $opt_d $opt_D $opt_r $opt_h $opt_m $opt_o $opt_x );
+use vars qw( $opt_f $opt_q $opt_c $opt_d $opt_D $opt_r $opt_H $opt_m $opt_o $opt_x );
 getopts('f:q:c:d:D:r:hm:o:x:');
 
 die $usage unless @ARGV and $opt_f;
@@ -247,7 +263,7 @@ while (my $line = <$in>){
         } else {
             print STDERR "WARNING: Variant position without GT value:\n$line\n";
         }
-        if ($gtval ne "1/1" and $gtval ne "1" and !$opt_h){
+        if ($gtval ne "1/1" and $gtval ne "1" and !$opt_H){
             $filt++;
             $stats[5]++;
             push @filt_types, "nh";
@@ -335,7 +351,7 @@ print STDERR "\tBelow minimum consensus ($mincons%): $stats[1]\n";
 print STDERR "\tBelow minimum depth ($mindep): $stats[2]\n";
 print STDERR "\tAbove maximum depth ($maxfold x $median): $stats[3]\n";
 print STDERR "\tUnidirectional ($mindir): $stats[4]\n";
-print STDERR "\tNon-homozygous: $stats[5]\n" if !$opt_h;
+print STDERR "\tNon-homozygous: $stats[5]\n" if !$opt_H;
 print STDERR "\tMasked: $stats[6]\n";
 print STDERR "Total SNVs: $totalsnps\n";
 

@@ -7,7 +7,7 @@ use File::Basename;
 use File::Spec::Functions qw ( catfile path );
 
 my $usage = "
-bcftools_filter_and_align_annotator.pl
+bcftools_filter_and_align_annotate.pl
 
 Required:
   -t    table.txt file output by bcftools_filter_and_align
@@ -28,18 +28,6 @@ my @c_seqs;
 my %c_recs;
 my $status = gbk_convert($gbkfile);
 die "ERROR: gbk_convert failed" if $status;
-### for now only single-sequence alignments/genbank files will be accepted
-#my $refgen = uc($c_seqs[0][1]);
-#my $cid = $c_seqs[0][0];
-#my @refrecs;
-#foreach my $start (sort{$a <=> $b} keys %{$c_recs{$cid}}){
-#    foreach my $stop (sort{$a <=> $b} keys %{$c_recs{$cid}{$start}}){
-#        foreach my $dir (sort keys %{$c_recs{$cid}{$start}{$stop}}){
-#            my ($type, $lid, $prod) = @{$c_recs{$cid}{$start}{$stop}{$dir}};
-#            push @refrecs, ([$start, $stop, $dir, $type, $lid, $prod]);
-#        }
-#    }
-#}
 
 ## Read in SNP table
 my $header;
@@ -54,7 +42,7 @@ while (my $line = <$tin>){
     my $cid = shift @tmp;
     my $pos = shift @tmp;
     unless ($header){
-        print "contig_id\tpos\tref_base\ttype\tlocus_id\tproduct\tstrand\tgene_position\tcoodn_position\tcodon\tAA";
+        print "contig_id\tpos\tref_base\ttype\tlocus_id\tproduct\tstrand\tgene_position\tcodon_position\tcodon\tAA";
         foreach my $i (0 .. $#tmp){
             my $id = $tmp[$i];
             #if ($i == 0){
@@ -338,35 +326,4 @@ sub gbk_convert{
     close ($gbkin);
     %c_recs = %crecs;
     return(0);
-    
-    #my $cds_count = 0;
-    #foreach my $cid (@ctg_order){
-    #    foreach my $start (sort{$a <=> $b} keys %{$crecs{$cid}}){
-    #        foreach my $stop (sort{$a <=> $b} keys %{$crecs{$cid}{$start}}){
-    #            foreach my $dir (sort keys %{$crecs{$cid}{$start}{$stop}}){
-    #                my ($is_cds, $lid, $prod) = @{$crecs{$cid}{$start}{$stop}{$dir}};
-    #                if ($is_cds){
-    #                    $cds_count++;
-    #                    unless ($lid){
-    #                        print STDERR "ERROR: CDS at $start..$stop on contig $cid in file $file for strain $filename has no locus_id or gene id\n";
-    #                        print STDERR "<br>\n" if $web;
-    #                        return(3);
-    #                    }
-    #                    print $crdout "$filenum\t$lid\t#$filename#$cid\t$start\t$stop\t$dir\t";
-    #                    print $crdout "$prod" if $prod;
-    #                    print $crdout "\n";
-    #                }
-    #            }
-    #        }
-    #    }
-    #}
-    #unless ($cds_count){
-    #    print STDERR "\n<p>" if $web;
-    #    print STDERR "FYI: No CDS annotations were found in genbank file $file. Only sequence information will be used from this file.\n";
-    #    print STDERR "</p>\n" if $web;
-    #}
-    #print STDERR "&nbsp;&nbsp;&nbsp;&nbsp;" if $web;
-    #print STDERR "\t$shortfile contains $seqcount sequence record(s) and $cds_count CDS annotations.\n";
-    #print STDERR "<br>\n" if $web;
-    return (0);
 }

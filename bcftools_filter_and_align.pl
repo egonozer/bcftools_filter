@@ -42,11 +42,11 @@ bcftools mpileup \
   > variants.vcf
 (for bcftools version version 1.9)
 
-Note: As a reminder, the default of samtools mpileup (without the '-B' flag) is
-to perform BAQ base quality calculation. Though this can avoid calling false
-SNPs around INDELs, it may result in some true bases matching the reference to
-be filtered out of the output. Hence there may less false SNPs at the cost of
-more false gaps. Caveat emptor.
+Note: As a reminder, the default of samtools or bcftools mpileup (without the 
+'-B' flag) is to perform BAQ base quality calculation. Though this can avoid 
+calling false SNPs around INDELs, it may result in some true bases matching the 
+reference to be filtered out of the output. Hence there may fewer false SNPs at 
+the cost of more false gaps. Caveat emptor.
 
 In the output tab-separated table, the order of the records in each column
 is:
@@ -76,9 +76,9 @@ Options:
         [default: 3]
   -r    minimum number of reads in each direction
         [default: 1]
-  -h    DO NOT require homozygositiy
+  -H    DO NOT require homozygositiy
         [default: only keep SNVs homozygous under diploid model, i.e. GT = 1/1 or haploid model, i.e. GT = 1]
-  -m    reference genome masking file, in interval format output by NCBI dustmaker,
+  -m    reference genome masking file, in interval format output by blast_masker.pl or NCBI dustmaker,
         i.e.
         >chromosome_name
         209 - 215
@@ -94,7 +94,7 @@ Options:
 ";
 
 use Getopt::Std;
-use vars qw( $opt_v $opt_f $opt_q $opt_c $opt_d $opt_D $opt_r $opt_h $opt_m $opt_o $opt_x $opt_i $opt_t );
+use vars qw( $opt_v $opt_f $opt_q $opt_c $opt_d $opt_D $opt_r $opt_H $opt_m $opt_o $opt_x $opt_i $opt_t );
 getopts('v:f:q:c:d:D:r:hm:o:x:it:');
 
 die $usage unless $opt_v and $opt_f;
@@ -339,7 +339,7 @@ while (my $vline = <$vin>){
                     } else {
                         print STDERR "WARNING: Variant position without GT value:\n$line\n";
                     }
-                    if (($gtval ne "1/1" and $gtval ne "1") and !$opt_h){
+                    if (($gtval ne "1/1" and $gtval ne "1") and !$opt_H){
                         $filt++;
                         $stats[5]++;
                         push @filt_types, "nh";
