@@ -262,7 +262,7 @@ non-core sites, i.e. those without a variant position called in a given subset o
 
 #### 4.4.3 Outputs
 
-Will produce files \<prefix>.table_filtered.txt and \<prefix>.alignment_filtered.fasta where "\<prefix>" is the value given to option `-o`. See section  [4.2.4](4.2.4-outputs) above for details. 
+Will produce files \<prefix>.table_filtered.txt and \<prefix>.alignment_filtered.fasta where "\<prefix>" is the value given to option `-o`. See section  [4.2.4](#424-outputs) above for details. 
 
 ### 4.5 bcftools_filter_and_align_invariant.pl
 
@@ -305,7 +305,7 @@ Optional:
 
 #### 4.6.3 Outputs
 
-Will produce two files \<prefix>.table.txt and \<prefix>.alignment.fasta. Format of these files will be similar to the output of bcftools_filter_and_align.pl described in section [4.2.4](4.2.4-outputs). The only exception is that the read count values in the table file will all be "?" characters. 
+Will produce two files \<prefix>.table.txt and \<prefix>.alignment.fasta. Format of these files will be similar to the output of bcftools_filter_and_align.pl described in section [4.2.4](#424-outputs). The only exception is that the read count values in the table file will all be "?" characters. 
 
 ### 4.7 blast_masker.pl
 
