@@ -1,19 +1,9 @@
 # BCFTOOLS FILTER
 ***
-## CONTENTS
 
-1. **Introduction**
-2. **Requirements**
-3. **Installation**
-4. **Scripts, Usage, and Outputs**
-5. **Output**
-6. **License**
-7. **Contact**
-
-***
 ## 1. INTRODUCTION
 
-This repository contains a set of scripts for reading and filtering variant call format (vcf) files produced by bcftools to generate consensus sequences or consensus alignments from whole genome sequence alignments.  
+This repository contains a set of scripts for reading and filtering variant call format (vcf) files produced by bcftools from whole genome sequence alignments to generate consensus sequences or consensus alignments.  
 
 ## 2. REQUIREMENTS
 
