@@ -7,9 +7,9 @@ This repository contains a set of scripts for reading and filtering variant call
 
 ## 2. REQUIREMENTS
 
-Perl
-[bcftools](https://anaconda.org/bioconda/bcftools)
-[blastn](https://anaconda.org/bioconda/blast) (only needed for blast_masker.pl)
+* Perl
+* [bcftools](https://anaconda.org/bioconda/bcftools)
+* [blastn](https://anaconda.org/bioconda/blast) (only needed for [blast_masker.pl](#47-blast_maskerpl))
 
 ## 3. INSTALLATION
 
@@ -93,7 +93,7 @@ bcftools mpileup \
 * `-D`: Maximum read depth, in fold of median read for the total alignment. Default: 3
 * `-r`: Minimum number of reads in either direction required. Default: 1
 * `-H`: DO NOT require homozygositiy. Default: only keep SNVs homozygous under diploid model, i.e. GT = 1/1 or haploid model, i.e. GT = 1. 
-* `-m`: Reference genome masking file, in interval format output by blast_masker.pl (see below) or NCBI dustmaker.
+* `-m`: Reference genome masking file, in interval format output by blast_masker.pl ([see below](#47-blast_maskerpl)) or NCBI dustmaker.
 Example format: 
 ```
         >chromosome_name
@@ -157,7 +157,7 @@ Format:
 * `-D`: Maximum read depth, in fold of median read for the total alignment. Default: 3
 * `-r`: Minimum number of reads in either direction required. Default: 1
 * `-H`: DO NOT require homozygositiy. Default: only keep SNVs homozygous under diploid model, i.e. GT = 1/1 or haploid model, i.e. GT = 1.
-* `-m`: Reference genome masking file, in interval format output by blast_masker.pl (see below) or NCBI dustmaker.
+* `-m`: Reference genome masking file, in interval format output by blast_masker.pl ([see below](#47-blast_maskerpl)) or NCBI dustmaker.
 Example format: 
 ```
         >chromosome_name
