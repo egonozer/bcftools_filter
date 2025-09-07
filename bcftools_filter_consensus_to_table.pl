@@ -1,10 +1,13 @@
 #!/usr/bin/env perl
 
+my $version = "0.4";
+
 use strict;
 use warnings;
 
 my $usage = "
 bcftools_filter_consensus_to_table.pl
+version: $version
 
 Generates a table of variant positions in the same format as the one produced by
 bcftools_filter_and_align.pl as well as a thinned multiple genome alignment.

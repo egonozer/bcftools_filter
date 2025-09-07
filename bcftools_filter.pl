@@ -1,4 +1,6 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
+
+my $version = "0.4";
 
 use strict;
 use warnings;
@@ -6,6 +8,7 @@ use warnings;
 my $usage = "
 
 bcftools_filter.pl [options] <results.vcf or piped from bcftools>
+version: $version
 
 Filters bcftools variant results produced from alignments against a reference.
 
@@ -26,7 +29,7 @@ bcftools mpileup \
   -Ou <alignment.bam> | \
   bcftools call -m -V indels -Ov --ploidy 1 - \
   > variants.vcf
-(for bcftools version version 1.9)
+(for bcftools version version 1.0 or higher)
 
 Will also accept gzipped or bgzipped vcf files
 

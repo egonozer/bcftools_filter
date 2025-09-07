@@ -1,4 +1,6 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
+
+my $version = "0.4";
 
 use strict;
 use warnings;
@@ -8,6 +10,7 @@ use File::Spec::Functions qw ( catfile path );
 
 my $usage = "
 bcftools_filter_and_align_annotate.pl
+version: $version
 
 Required:
   -t    table.txt file output by bcftools_filter_and_align

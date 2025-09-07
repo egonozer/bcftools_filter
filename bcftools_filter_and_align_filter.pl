@@ -1,11 +1,14 @@
 #!/usr/bin/env perl
 
+my $version = "0.4";
+
 use strict;
 use warnings;
 
 my $usage = "
 
 bcftools_filter_and_align_filter.pl [options]
+version: $version
 
 Filters a table produced by bcftools_filter_and_align.pl to remove
 non-core sites and generate a new table and new fasta alignment.

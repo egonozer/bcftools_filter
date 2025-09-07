@@ -1,6 +1,9 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 
-my $version = "0.3";
+my $version = "0.4";
+
+## Changes from v0.3
+## Github release version
 
 ## Changes from v0.2
 ## Replace large snv hash with arrays (memory saving)

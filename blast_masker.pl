@@ -1,6 +1,9 @@
 #!/usr/bin/env perl
 
-my $version = "0.2";
+my $version = "0.4";
+
+## Changes from v0.2
+## Github release version
 
 ## Changes from v0.1
 ## Output to file instead of STDOUT
@@ -15,6 +18,7 @@ $|++;
 
 my $usage = "
 blast_masker.pl
+version: $version
 
 Performs blast of sequences against themselves, outputs regions of self-alignment
 in the same interval format as NCBI's dustmaker.

@@ -1,10 +1,13 @@
 #!/usr/bin/env perl
 
+my $version = "0.4";
+
 use strict;
 use warnings;
 
 my $usage = "
 bcftools_filter_and_align_invariant.pl <reference.fasta> <table.txt>
+version: $version
 
 Given the reference fasta sequence file and the 'table.txt' file
 output by bcftools_filter_and_align.pl will output a breakdown
